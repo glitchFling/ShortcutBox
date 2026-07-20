@@ -1,0 +1,60 @@
+name: Sync Branches to R2
+
+on:
+  push:
+    branches: ["**"]
+  delete:
+  workflow_dispatch:   # manual full backfill of every branch
+
+env:
+  R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  AWS_DEFAULT_REGION: auto
+
+jobs:
+  # Every push: sync just the branch that was pushed
+  sync-pushed-branch:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync branch to R2
+        run: |
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+          aws s3 sync . "s3://shortcutbox/${BRANCH}/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --exclude ".git/*" --exclude ".github/*" \
+            --delete
+
+  # Branch deleted on GitHub: remove its prefix from R2 too
+  remove-deleted-branch:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove branch prefix from R2
+        run: |
+          BRANCH="${{ github.event.ref }}"
+          BRANCH="${BRANCH//\//-}"
+          aws s3 rm "s3://shortcutbox/${BRANCH}/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --recursive
+
+  # Manual trigger: backfill every existing branch in one go
+  sync-all-branches:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Sync each branch
+        run: |
+          for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin | sed 's#origin/##' | grep -v '^HEAD$'); do
+            SAFE="${branch//\//-}"
+            git checkout --force "$branch"
+            aws s3 sync . "s3://shortcutbox/${SAFE}/" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --exclude ".git/*" --exclude ".github/*" \
+              --delete
+          done
