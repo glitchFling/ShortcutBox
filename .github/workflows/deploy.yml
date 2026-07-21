@@ -27,6 +27,57 @@ jobs:
             --exclude ".git/*" --exclude ".github/*" \
             --delete
 
+      - name: Process command.txt if present
+        if: success()
+        run: |
+          if [ -f command.txt ]; then
+            COMMAND=$(tr -d '\r' < command.txt | xargs)
+            echo "Detected command in command.txt: '$COMMAND'"
+            
+            if [ "$COMMAND" = "deploy lock --on" ]; then
+              echo "Locking deployments..."
+              echo "locked" > deploy_lock
+              aws s3 cp deploy_lock s3://shortcutbox/deploy_lock --endpoint-url "$R2_ENDPOINT"
+              echo "Deployment lock is now ON."
+              
+            elif [ "$COMMAND" = "deploy lock --off" ]; then
+              echo "Unlocking deployments..."
+              aws s3 rm s3://shortcutbox/deploy_lock --endpoint-url "$R2_ENDPOINT"
+              echo "Deployment lock is now OFF."
+              
+            elif [ "$COMMAND" = "deploy" ]; then
+              echo "Checking deploy lock..."
+              if aws s3 ls s3://shortcutbox/deploy_lock --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1; then
+                echo "ERROR: Deploy is locked. Aborting deployment."
+                exit 1
+              fi
+              echo "Installing dependencies..."
+              npm install
+              echo "Deploying to production..."
+              npx wrangler deploy
+              
+            elif [ "$COMMAND" = "deploy dev" ]; then
+              echo "Checking deploy lock..."
+              if aws s3 ls s3://shortcutbox/deploy_lock --endpoint-url "$R2_ENDPOINT" >/dev/null 2>&1; then
+                echo "ERROR: Deploy is locked. Aborting deployment."
+                exit 1
+              fi
+              echo "Installing dependencies..."
+              npm install
+              echo "Deploying to dev environment..."
+              npx wrangler deploy --env dev
+              
+            else
+              echo "ERROR: Unknown command: '$COMMAND'"
+              exit 1
+            fi
+          else
+            echo "No command.txt found. Skipping command processing."
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+
   # Branch deleted on GitHub: remove its prefix from R2 too
   remove-deleted-branch:
     if: github.event_name == 'delete' && github.event.ref_type == 'branch'
